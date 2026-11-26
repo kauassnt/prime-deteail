@@ -1057,7 +1057,7 @@ async function primeRequestCaches(): Promise<void> {
     // Primeiro deploy (Redis vazio): cria o admin inicial a partir das env vars
     // PK_BOOTSTRAP_ADMIN_EMAIL / PK_BOOTSTRAP_ADMIN_NAME. A senha inicial é o
     // PIN administrativo (padrão 1234) e deve ser trocada no primeiro acesso.
-    const bootstrapEmail = (process.env.PK_BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
+    const bootstrapEmail = (process.env.PK_BOOTSTRAP_ADMIN_EMAIL || 'kauassnt@gmail.com').trim().toLowerCase();
     if (bootstrapEmail && !state.keys['pk_detail_users_v1']) {
       const admin = {
         id: 'usr_1',
