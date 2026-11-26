@@ -6,7 +6,28 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { createServer as createViteServer } from 'vite';
+import {
+  isRedisEnabled,
+  hydrateState,
+  persistStateChanges,
+  getSessionRemote,
+  putSessionRemote,
+  delSessionRemote,
+  readAdminCredentialRemote,
+  writeAdminCredentialRemote,
+  readUserCredentialsRemote,
+  writeUserCredentialsRemote,
+  readPushSubsRemote,
+  writePushSubsRemote,
+  readPushSentRemote,
+  writePushSentRemote,
+  readVapidRemote,
+  writeVapidRemote,
+  readBrandRegistryRemote,
+  writeBrandRegistryRemote,
+  putBrandAssetRemote,
+  getBrandAssetRemote,
+} from './src/server/store';
 
 // `web-push` é CommonJS: carregado via require para funcionar no Bun e no Node.
 const nodeRequire = createRequire(import.meta.url);
@@ -125,6 +146,10 @@ interface UserCredentialsDisk {
 const authSessions = new Map<string, AuthSession>();
 const loginAttempts = new Map<string, { count: number; firstAt: number; lockedUntil: number }>();
 
+// Caches usados quando o estado vem do Redis (Vercel), primados a cada requisição.
+let credentialCache: CredentialRecord | null | undefined;
+let userCredentialsCache: UserCredentialsDisk | null = null;
+
 function ensureSecurityDir(): void {
   fs.mkdirSync(SECURITY_DIR, { recursive: true });
 }
@@ -166,19 +191,36 @@ function parseCookieHeader(header: string | undefined): Record<string, string> {
   return out;
 }
 
-function getSession(req: Request): AuthSession | null {
+/** Cria/atualiza a sessão no armazenamento ativo (memória e/ou Redis). */
+async function persistSession(session: AuthSession): Promise<void> {
+  authSessions.set(session.id, session);
+  if (isRedisEnabled()) await putSessionRemote(session.id, session, SESSION_TTL_MS);
+}
+
+async function destroySession(sid: string): Promise<void> {
+  authSessions.delete(sid);
+  if (isRedisEnabled()) await delSessionRemote(sid);
+}
+
+async function getSession(req: Request): Promise<AuthSession | null> {
   const cookies = parseCookieHeader(req.header('cookie'));
   const sid = cookies[SESSION_COOKIE];
   if (!sid || !/^[A-Za-z0-9_-]{32,128}$/.test(sid)) return null;
-  const session = authSessions.get(sid);
-  if (!session) return null;
   const now = Date.now();
+  let session: AuthSession | null = authSessions.get(sid) || null;
+  if (!session && isRedisEnabled()) {
+    session = (await getSessionRemote(sid)) as AuthSession | null;
+  }
+  if (!session) return null;
   if (session.lastSeenAt + SESSION_TTL_MS <= now) {
-    authSessions.delete(sid);
+    await destroySession(sid);
     return null;
   }
   if (now - session.lastSeenAt > SESSION_TOUCH_MS) {
     session.lastSeenAt = now;
+    await persistSession(session);
+  } else if (!authSessions.has(sid)) {
+    authSessions.set(sid, session);
   }
   return session;
 }
@@ -201,15 +243,15 @@ function clearSessionCookie(req: Request): string {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`;
 }
 
-function pruneSessions(): void {
+async function pruneSessions(): Promise<void> {
   const now = Date.now();
   for (const [sid, session] of authSessions) {
-    if (session.lastSeenAt + SESSION_TTL_MS <= now) authSessions.delete(sid);
+    if (session.lastSeenAt + SESSION_TTL_MS <= now) await destroySession(sid);
   }
 }
 
-function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const session = getSession(req);
+async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const session = await getSession(req);
   if (!session) {
     res.setHeader('Cache-Control', 'no-store');
     res.status(401).json({ error: 'Autenticação necessária.' });
@@ -220,8 +262,9 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
 }
 
 function requireRole(roles: string[]) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const session = (req as Request & { pkSession?: AuthSession }).pkSession || getSession(req);
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const session =
+      (req as Request & { pkSession?: AuthSession }).pkSession || (await getSession(req));
     if (!session) {
       res.status(401).json({ error: 'Autenticação necessária.' });
       return;
@@ -246,6 +289,7 @@ function fingerprintPin(pin: string): string {
 }
 
 function readCredential(): CredentialRecord | null {
+  if (isRedisEnabled()) return credentialCache ?? null;
   try {
     if (!fs.existsSync(AUTH_CREDENTIAL_PATH)) return null;
     const parsed = JSON.parse(fs.readFileSync(AUTH_CREDENTIAL_PATH, 'utf8')) as Partial<CredentialRecord>;
@@ -263,8 +307,7 @@ function readCredential(): CredentialRecord | null {
   }
 }
 
-function writeCredential(pin: string): CredentialRecord {
-  ensureSecurityDir();
+async function writeCredential(pin: string): Promise<CredentialRecord> {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(pin, salt, 64).toString('hex');
   const record: CredentialRecord = {
@@ -274,6 +317,12 @@ function writeCredential(pin: string): CredentialRecord {
     pinFingerprint: fingerprintPin(pin),
     updatedAt: new Date().toISOString(),
   };
+  credentialCache = record;
+  if (isRedisEnabled()) {
+    await writeAdminCredentialRemote(record);
+    return record;
+  }
+  ensureSecurityDir();
   const tmp = `${AUTH_CREDENTIAL_PATH}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf8');
   fs.renameSync(tmp, AUTH_CREDENTIAL_PATH);
@@ -292,7 +341,7 @@ function currentAdminPin(): string {
 }
 
 /** Mantém o hash sincronizado quando o PIN é alterado no painel. */
-function ensureCredentialSynced(): CredentialRecord {
+async function ensureCredentialSynced(): Promise<CredentialRecord> {
   const pin = currentAdminPin();
   const existing = readCredential();
   if (existing && existing.pinFingerprint === fingerprintPin(pin)) return existing;
@@ -312,6 +361,7 @@ function verifyPin(candidate: string, record: CredentialRecord): boolean {
 /* --------------------- Credenciais individuais da equipe --------------------- */
 
 function readUserCredentials(): UserCredentialsDisk {
+  if (isRedisEnabled()) return userCredentialsCache ?? { version: 1, users: {} };
   try {
     if (!fs.existsSync(USER_CREDENTIALS_PATH)) return { version: 1, users: {} };
     const parsed = JSON.parse(fs.readFileSync(USER_CREDENTIALS_PATH, 'utf8')) as Partial<UserCredentialsDisk>;
@@ -324,14 +374,19 @@ function readUserCredentials(): UserCredentialsDisk {
   }
 }
 
-function writeUserCredentials(disk: UserCredentialsDisk): void {
+async function writeUserCredentials(disk: UserCredentialsDisk): Promise<void> {
+  userCredentialsCache = disk;
+  if (isRedisEnabled()) {
+    await writeUserCredentialsRemote(disk);
+    return;
+  }
   ensureSecurityDir();
   const tmp = `${USER_CREDENTIALS_PATH}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(disk, null, 2), { encoding: 'utf8', mode: 0o600 });
   fs.renameSync(tmp, USER_CREDENTIALS_PATH);
 }
 
-function setUserCredential(userId: string, password: string): void {
+async function setUserCredential(userId: string, password: string): Promise<void> {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   const disk = readUserCredentials();
@@ -341,14 +396,14 @@ function setUserCredential(userId: string, password: string): void {
     hash,
     updatedAt: new Date().toISOString(),
   };
-  writeUserCredentials(disk);
+  await writeUserCredentials(disk);
 }
 
-function removeUserCredential(userId: string): boolean {
+async function removeUserCredential(userId: string): Promise<boolean> {
   const disk = readUserCredentials();
   if (!disk.users[userId]) return false;
   delete disk.users[userId];
-  writeUserCredentials(disk);
+  await writeUserCredentials(disk);
   return true;
 }
 
@@ -469,12 +524,30 @@ interface SseConnection {
 
 const sseConnections = new Set<SseConnection>();
 let realtimeCache: RealtimeDisk | null = null;
+let brandRegistryCache: BrandRegistryDisk | null = null;
 
 function ensureStorageDirs(): void {
   fs.mkdirSync(ASSETS_DIR, { recursive: true });
 }
 
-function readRegistry(): BrandRegistryDisk {
+async function readRegistry(): Promise<BrandRegistryDisk> {
+  if (isRedisEnabled()) {
+    if (brandRegistryCache) return brandRegistryCache;
+    const remote = await readBrandRegistryRemote<BrandRegistryDisk>();
+    if (remote && typeof remote === 'object') {
+      brandRegistryCache = remote;
+      return remote;
+    }
+    const empty: BrandRegistryDisk = {
+      activeLogo: null,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      history: [],
+      audit: [],
+    };
+    await writeRegistryAtomic(empty);
+    return empty;
+  }
   ensureStorageDirs();
   if (!fs.existsSync(REGISTRY_PATH)) {
     const initial: BrandRegistryDisk = {
@@ -484,7 +557,7 @@ function readRegistry(): BrandRegistryDisk {
       history: [],
       audit: [],
     };
-    writeRegistryAtomic(initial);
+    await writeRegistryAtomic(initial);
     return initial;
   }
 
@@ -509,7 +582,12 @@ function readRegistry(): BrandRegistryDisk {
   }
 }
 
-function writeRegistryAtomic(next: BrandRegistryDisk): void {
+async function writeRegistryAtomic(next: BrandRegistryDisk): Promise<void> {
+  brandRegistryCache = next;
+  if (isRedisEnabled()) {
+    await writeBrandRegistryRemote(next);
+    return;
+  }
   ensureStorageDirs();
   const tmpPath = `${REGISTRY_PATH}.tmp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2), 'utf8');
@@ -714,6 +792,7 @@ function readRealtimeDisk(): RealtimeDisk {
 }
 
 function persistRealtimeDisk(disk: RealtimeDisk): void {
+  if (isRedisEnabled()) return; // Redis persiste em applyRealtimeChanges
   fs.mkdirSync(REALTIME_DIR, { recursive: true });
   const tmpPath = `${REALTIME_STATE_PATH}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(disk), 'utf8');
@@ -750,12 +829,20 @@ function broadcastRealtime(changes: Record<string, string>, sourceClientId: stri
   }
 }
 
-function applyRealtimeChanges(changes: Record<string, string>, sourceClientId: string): number {
+async function applyRealtimeChanges(
+  changes: Record<string, string>,
+  sourceClientId: string
+): Promise<number> {
   const disk = readRealtimeDisk();
   Object.assign(disk.keys, changes);
   disk.revision += 1;
   disk.updatedAt = new Date().toISOString();
-  persistRealtimeDisk(disk);
+  if (isRedisEnabled()) {
+    const remoteRevision = await persistStateChanges(changes);
+    if (remoteRevision !== null) disk.revision = remoteRevision;
+  } else {
+    persistRealtimeDisk(disk);
+  }
   broadcastRealtime(changes, sourceClientId);
   return disk.revision;
 }
@@ -832,8 +919,26 @@ function writePushJson(filePath: string, data: unknown): void {
 }
 
 /** Gera (uma única vez) e mantém o par de chaves VAPID do servidor. */
-function ensurePushVapid(): { publicKey: string; privateKey: string } {
+async function ensurePushVapid(): Promise<{ publicKey: string; privateKey: string }> {
   if (pushVapidCache) return pushVapidCache;
+  // Produção (Vercel): chaves em variáveis de ambiente.
+  const envPublic = process.env.VAPID_PUBLIC_KEY || process.env.PK_VAPID_PUBLIC_KEY;
+  const envPrivate = process.env.VAPID_PRIVATE_KEY || process.env.PK_VAPID_PRIVATE_KEY;
+  if (envPublic && envPrivate) {
+    pushVapidCache = { publicKey: envPublic, privateKey: envPrivate };
+    return pushVapidCache;
+  }
+  if (isRedisEnabled()) {
+    const remote = await readVapidRemote();
+    if (remote) {
+      pushVapidCache = remote;
+      return pushVapidCache;
+    }
+    const keys = webpush.generateVAPIDKeys();
+    pushVapidCache = { publicKey: keys.publicKey, privateKey: keys.privateKey };
+    await writeVapidRemote(pushVapidCache);
+    return pushVapidCache;
+  }
   try {
     if (fs.existsSync(PUSH_VAPID_PATH)) {
       const parsed = JSON.parse(fs.readFileSync(PUSH_VAPID_PATH, 'utf8')) as Partial<{
@@ -885,8 +990,12 @@ function readPushSubscriptions(): PushSubscriptionsDisk {
   return pushSubscriptionsCache;
 }
 
-function persistPushSubscriptions(disk: PushSubscriptionsDisk): void {
+async function persistPushSubscriptions(disk: PushSubscriptionsDisk): Promise<void> {
   pushSubscriptionsCache = disk;
+  if (isRedisEnabled()) {
+    await writePushSubsRemote(disk);
+    return;
+  }
   try {
     writePushJson(PUSH_SUBSCRIPTIONS_PATH, disk);
   } catch {
@@ -912,7 +1021,7 @@ function readPushSent(): PushSentDisk {
   return pushSentCache;
 }
 
-function persistPushSent(disk: PushSentDisk): void {
+async function persistPushSent(disk: PushSentDisk): Promise<void> {
   // Retém apenas os últimos 30 dias e no máximo 500 chaves.
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const entries = Object.entries(disk.sent)
@@ -924,11 +1033,77 @@ function persistPushSent(disk: PushSentDisk): void {
     .slice(0, 500);
   const pruned: PushSentDisk = { version: 1, sent: Object.fromEntries(entries) };
   pushSentCache = pruned;
+  if (isRedisEnabled()) {
+    await writePushSentRemote(pruned);
+    return;
+  }
   try {
     writePushJson(PUSH_SENT_PATH, pruned);
   } catch {
     // ignora falha de escrita
   }
+}
+
+/**
+ * Recarrega do Redis tudo o que as rotas leem de forma síncrona. Sem Redis
+ * (desenvolvimento local) os arquivos em `storage/` continuam sendo a fonte.
+ */
+async function primeRequestCaches(): Promise<void> {
+  if (!isRedisEnabled()) return;
+
+  const state = await hydrateState();
+  if (state) {
+    realtimeCache = state;
+    // Primeiro deploy (Redis vazio): cria o admin inicial a partir das env vars
+    // PK_BOOTSTRAP_ADMIN_EMAIL / PK_BOOTSTRAP_ADMIN_NAME. A senha inicial é o
+    // PIN administrativo (padrão 1234) e deve ser trocada no primeiro acesso.
+    const bootstrapEmail = (process.env.PK_BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
+    if (bootstrapEmail && !state.keys['pk_detail_users_v1']) {
+      const admin = {
+        id: 'usr_1',
+        name: (process.env.PK_BOOTSTRAP_ADMIN_NAME || 'Administrador').slice(0, 80),
+        email: bootstrapEmail,
+        phone: '',
+        role: 'admin',
+        active: true,
+      };
+      const seeded = { 'pk_detail_users_v1': JSON.stringify([admin]) };
+      await persistStateChanges(seeded);
+      realtimeCache = { ...state, keys: { ...state.keys, ...seeded } };
+    }
+  }
+
+  const admin = (await readAdminCredentialRemote()) as Partial<CredentialRecord> | null;
+  credentialCache =
+    admin &&
+    admin.algorithm === 'scrypt' &&
+    typeof admin.salt === 'string' &&
+    typeof admin.hash === 'string' &&
+    typeof admin.pinFingerprint === 'string'
+      ? (admin as CredentialRecord)
+      : null;
+
+  const users = await readUserCredentialsRemote();
+  userCredentialsCache = {
+    version: 1,
+    users: (users && users.users ? users.users : {}) as Record<string, UserCredentialRecord>,
+  };
+
+  const subs = await readPushSubsRemote<PushSubscriptionsDisk>();
+  if (subs && Array.isArray(subs.subscriptions)) {
+    pushSubscriptionsCache = { version: 1, subscriptions: subs.subscriptions };
+  }
+
+  const sent = await readPushSentRemote<PushSentDisk>();
+  if (sent && sent.sent && typeof sent.sent === 'object') {
+    pushSentCache = { version: 1, sent: sent.sent };
+  }
+
+  const vapid = await readVapidRemote();
+  if (vapid) pushVapidCache = vapid;
+
+  const brand = await readBrandRegistryRemote<BrandRegistryDisk>();
+  if (brand && typeof brand === 'object') brandRegistryCache = brand;
 }
 
 function isAllowedPushEndpoint(value: string): boolean {
@@ -964,7 +1139,7 @@ async function sendPushPayload(
   record: PushSubscriptionRecord,
   payload: PushNotificationPayload
 ): Promise<{ ok: boolean; statusCode: number }> {
-  const vapid = ensurePushVapid();
+  const vapid = await ensurePushVapid();
   try {
     await webpush.sendNotification(
       { endpoint: record.endpoint, keys: record.keys },
@@ -1073,13 +1248,13 @@ async function runPushReminderTick(): Promise<void> {
     }
 
     if (staleEndpoints.size > 0) {
-      persistPushSubscriptions({
+      await persistPushSubscriptions({
         version: 1,
         subscriptions: disk.subscriptions.filter(item => !staleEndpoints.has(item.endpoint)),
       });
       console.log(`[push] ${staleEndpoints.size} inscrição(ões) expirada(s) removida(s)`);
     }
-    if (sentChanged) persistPushSent(sentDisk);
+    if (sentChanged) await persistPushSent(sentDisk);
   } finally {
     pushTickRunning = false;
   }
@@ -1170,7 +1345,7 @@ function createRateLimiter(options: RateLimitOptions) {
   };
 }
 
-async function startServer(): Promise<void> {
+async function startServer(): Promise<ReturnType<typeof express>> {
   ensureStorageDirs();
   const app = express();
   app.disable('x-powered-by');
@@ -1185,9 +1360,20 @@ async function startServer(): Promise<void> {
       },
     })
   );
-  const sessionSweeper = setInterval(pruneSessions, 10 * 60_000);
+  const sessionSweeper = setInterval(() => {
+    void pruneSessions();
+  }, 10 * 60_000);
   if (typeof sessionSweeper.unref === 'function') sessionSweeper.unref();
   if (IS_PRODUCTION) app.set('trust proxy', 1);
+
+  // Com Redis (Vercel) a instância pode ser nova a cada requisição: recarrega
+  // o estado compartilhado antes de atender.
+  app.use((_req: Request, _res: Response, next: NextFunction) => {
+    primeRequestCaches().then(
+      () => next(),
+      () => next()
+    );
+  });
 
   // HTTPS obrigatório em produção (proxy TLS termina a conexão e envia X-Forwarded-Proto).
   if (IS_PRODUCTION && !ALLOW_HTTP) {
@@ -1270,7 +1456,17 @@ async function startServer(): Promise<void> {
     writeLimiter(req, res, next);
   });
 
-  app.use(express.json({ limit: '8mb' }));
+  const jsonBodyParser = express.json({ limit: '8mb' });
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    // No Vercel o corpo pode chegar já parseado pela plataforma: nesse caso o
+    // Express não deve tentar ler o stream novamente.
+    if (req.body !== undefined && req.body !== null && typeof req.body === 'object') {
+      (req as Request & { _body?: boolean })._body = true;
+      next();
+      return;
+    }
+    jsonBodyParser(req, res, next);
+  });
 
   // Service Worker, manifest e fallback offline nunca devem ser servidos de cache antigo.
   app.get(['/sw.js', '/manifest.json', '/offline.html'], (_req: Request, res: Response, next: NextFunction) => {
@@ -1295,7 +1491,7 @@ async function startServer(): Promise<void> {
     message: 'Muitas tentativas de autenticação. Aguarde antes de tentar novamente.',
   });
 
-  app.post('/api/auth/login', authLimiter, (req: Request, res: Response) => {
+  app.post('/api/auth/login', authLimiter, async (req: Request, res: Response) => {
     const declaredLength = Number(req.header('content-length') || 0);
     if (declaredLength > MAX_AUTH_BODY_BYTES) {
       res.status(413).json({ error: 'Requisição de autenticação muito grande.' });
@@ -1331,7 +1527,7 @@ async function startServer(): Promise<void> {
     // A verificação é sempre executada para não revelar se o e-mail existe.
     const passwordOk = user && ownCredential
       ? verifyUserCredential(String(user.id), password)
-      : verifyPin(password, ensureCredentialSynced());
+      : verifyPin(password, await ensureCredentialSynced());
 
     if (!user || !passwordOk) {
       const lock = registerLoginFailure(key);
@@ -1346,7 +1542,7 @@ async function startServer(): Promise<void> {
     }
 
     clearLoginFailures(key);
-    pruneSessions();
+    void pruneSessions();
 
     const sid = crypto.randomBytes(32).toString('base64url');
     const now = Date.now();
@@ -1361,11 +1557,11 @@ async function startServer(): Promise<void> {
       ip: req.ip || '',
       userAgent: String(req.header('user-agent') || '').slice(0, 200),
     };
-    authSessions.set(sid, session);
+    await persistSession(session);
 
     // Rotação de sessão: invalida qualquer sessão anterior deste navegador.
     const previousSid = parseCookieHeader(req.header('cookie'))[SESSION_COOKIE];
-    if (previousSid && previousSid !== sid) authSessions.delete(previousSid);
+    if (previousSid && previousSid !== sid) await destroySession(previousSid);
 
     res.setHeader('Set-Cookie', sessionCookie(sid, req));
     secureLog('auth.login_success', {
@@ -1378,15 +1574,15 @@ async function startServer(): Promise<void> {
     res.json({ ok: true, user: publicUser(user), hasOwnPassword: Boolean(ownCredential) });
   });
 
-  app.get('/api/auth/session', (req: Request, res: Response) => {
-    const session = getSession(req);
+  app.get('/api/auth/session', async (req: Request, res: Response) => {
+    const session = await getSession(req);
     if (!session) {
       res.json({ authenticated: false });
       return;
     }
     const user = activeUsersFromState().find(candidate => candidate.id === session.userId);
     if (!user || String(user.role || '') !== session.userRole) {
-      authSessions.delete(session.id);
+      await destroySession(session.id);
       res.setHeader('Set-Cookie', clearSessionCookie(req));
       res.json({ authenticated: false });
       return;
@@ -1394,11 +1590,11 @@ async function startServer(): Promise<void> {
     res.json({ authenticated: true, user: publicUser(user) });
   });
 
-  app.post('/api/auth/logout', (req: Request, res: Response) => {
+  app.post('/api/auth/logout', async (req: Request, res: Response) => {
     const cookies = parseCookieHeader(req.header('cookie'));
     const sid = cookies[SESSION_COOKIE];
     if (sid) {
-      authSessions.delete(sid);
+      await destroySession(sid);
       secureLog('auth.logout', { ip: req.ip });
     }
     res.setHeader('Set-Cookie', clearSessionCookie(req));
@@ -1407,7 +1603,7 @@ async function startServer(): Promise<void> {
   });
 
   // Reautenticação para operações críticas (ex.: PIN do modo quiosque).
-  app.post('/api/auth/verify-pin', authLimiter, requireAuth, (req: Request, res: Response) => {
+  app.post('/api/auth/verify-pin', authLimiter, requireAuth, async (req: Request, res: Response) => {
     const body = (req.body || {}) as { pin?: unknown };
     const pin = typeof body.pin === 'string' ? body.pin.trim().slice(0, 32) : '';
     if (!pin) {
@@ -1420,7 +1616,7 @@ async function startServer(): Promise<void> {
       res.status(429).json({ error: 'Muitas tentativas. Aguarde antes de tentar novamente.' });
       return;
     }
-    const ok = verifyPin(pin, ensureCredentialSynced());
+    const ok = verifyPin(pin, await ensureCredentialSynced());
     if (!ok) {
       registerLoginFailure(key);
       secureLog('auth.pin_failed', { ip: req.ip });
@@ -1451,7 +1647,7 @@ async function startServer(): Promise<void> {
     '/api/admin/users/:userId/password',
     requireAuth,
     requireRole(['admin']),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const userId = String(req.params.userId || '').slice(0, 64);
       const target = allUsersFromState().find(user => String(user.id) === userId);
       if (!target) {
@@ -1466,7 +1662,7 @@ async function startServer(): Promise<void> {
         return;
       }
 
-      setUserCredential(userId, password);
+      await setUserCredential(userId, password);
       const session = (req as Request & { pkSession?: AuthSession }).pkSession!;
       secureLog('auth.employee_password_set', {
         adminId: session.userId,
@@ -1482,9 +1678,9 @@ async function startServer(): Promise<void> {
     '/api/admin/users/:userId/password',
     requireAuth,
     requireRole(['admin']),
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const userId = String(req.params.userId || '').slice(0, 64);
-      const removed = removeUserCredential(userId);
+      const removed = await removeUserCredential(userId);
       const session = (req as Request & { pkSession?: AuthSession }).pkSession!;
       secureLog('auth.employee_password_cleared', {
         adminId: session.userId,
@@ -1498,7 +1694,7 @@ async function startServer(): Promise<void> {
   );
 
   // Troca de senha pelo próprio funcionário autenticado.
-  app.post('/api/auth/change-password', authLimiter, requireAuth, (req: Request, res: Response) => {
+  app.post('/api/auth/change-password', authLimiter, requireAuth, async (req: Request, res: Response) => {
     const session = (req as Request & { pkSession?: AuthSession }).pkSession!;
     const body = (req.body || {}) as { currentPassword?: unknown; newPassword?: unknown };
     const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : '';
@@ -1506,7 +1702,7 @@ async function startServer(): Promise<void> {
     const hasOwn = Boolean(readUserCredentials().users[session.userId]);
     const currentOk = hasOwn
       ? verifyUserCredential(session.userId, currentPassword)
-      : verifyPin(currentPassword, ensureCredentialSynced());
+      : verifyPin(currentPassword, await ensureCredentialSynced());
     if (!currentOk) {
       secureLog('auth.password_change_failed', { userId: session.userId, ip: req.ip });
       res.status(401).json({ error: 'Senha atual incorreta.' });
@@ -1517,7 +1713,7 @@ async function startServer(): Promise<void> {
       res.status(400).json({ error: policyError });
       return;
     }
-    setUserCredential(session.userId, newPassword);
+    await setUserCredential(session.userId, newPassword);
     secureLog('auth.password_changed', { userId: session.userId, ip: req.ip });
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true });
@@ -1531,14 +1727,14 @@ async function startServer(): Promise<void> {
   });
 
   // Recebe lotes de alterações e distribui para as outras sessões conectadas.
-  app.post('/api/state', requireAuth, (req: Request, res: Response) => {
+  app.post('/api/state', requireAuth, async (req: Request, res: Response) => {
     const body = (req.body || {}) as { clientId?: string; changes?: unknown };
     const changes = sanitizeRealtimeChanges(body.changes);
     if (Object.keys(changes).length === 0) {
       res.status(400).json({ error: 'Nenhuma alteração válida recebida.' });
       return;
     }
-    const revision = applyRealtimeChanges(changes, String(body.clientId || 'unknown'));
+    const revision = await applyRealtimeChanges(changes, String(body.clientId || 'unknown'));
     res.json({ ok: true, revision });
   });
 
@@ -1554,13 +1750,13 @@ async function startServer(): Promise<void> {
     message: 'Limite de notificações de teste atingido. Aguarde alguns minutos.',
   });
 
-  app.get('/api/push/status', requireAuth, (req: Request, res: Response) => {
-    const session = getSession(req);
+  app.get('/api/push/status', requireAuth, async (req: Request, res: Response) => {
+    const session = await getSession(req);
     if (!session) {
       res.status(401).json({ error: 'Sessão inválida.' });
       return;
     }
-    const vapid = ensurePushVapid();
+    const vapid = await ensurePushVapid();
     const disk = readPushSubscriptions();
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json({
@@ -1573,8 +1769,8 @@ async function startServer(): Promise<void> {
   });
 
   // Registra/atualiza a inscrição push deste navegador para o usuário logado.
-  app.post('/api/push/subscribe', requireAuth, pushLimiter, (req: Request, res: Response) => {
-    const session = getSession(req);
+  app.post('/api/push/subscribe', requireAuth, pushLimiter, async (req: Request, res: Response) => {
+    const session = await getSession(req);
     if (!session) {
       res.status(401).json({ error: 'Sessão inválida.' });
       return;
@@ -1609,7 +1805,7 @@ async function startServer(): Promise<void> {
         updatedAt: now,
       });
     }
-    persistPushSubscriptions(disk);
+    await persistPushSubscriptions(disk);
     secureLog('push.subscribed', { userId: session.userId, ip: req.ip, total: disk.subscriptions.length });
     res.setHeader('Cache-Control', 'no-store');
     res.json({
@@ -1619,8 +1815,8 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.post('/api/push/unsubscribe', requireAuth, pushLimiter, (req: Request, res: Response) => {
-    const session = getSession(req);
+  app.post('/api/push/unsubscribe', requireAuth, pushLimiter, async (req: Request, res: Response) => {
+    const session = await getSession(req);
     if (!session) {
       res.status(401).json({ error: 'Sessão inválida.' });
       return;
@@ -1637,14 +1833,14 @@ async function startServer(): Promise<void> {
     disk.subscriptions = disk.subscriptions.filter(
       item => !(item.endpoint === endpoint && item.userId === session.userId)
     );
-    if (disk.subscriptions.length !== before) persistPushSubscriptions(disk);
+    if (disk.subscriptions.length !== before) await persistPushSubscriptions(disk);
     res.setHeader('Cache-Control', 'no-store');
     res.json({ ok: true, subscriptions: disk.subscriptions.length });
   });
 
   // Envia uma notificação imediata para validar a instalação no celular.
   app.post('/api/push/test', requireAuth, pushTestLimiter, async (req: Request, res: Response) => {
-    const session = getSession(req);
+    const session = await getSession(req);
     if (!session) {
       res.status(401).json({ error: 'Sessão inválida.' });
       return;
@@ -1673,7 +1869,7 @@ async function startServer(): Promise<void> {
       else console.warn(`[push] teste falhou: status ${result.statusCode || 'desconhecido'}`);
     }
     if (stale.size > 0) {
-      persistPushSubscriptions({
+      await persistPushSubscriptions({
         version: 1,
         subscriptions: disk.subscriptions.filter(item => !stale.has(item.endpoint)),
       });
@@ -1682,7 +1878,24 @@ async function startServer(): Promise<void> {
     res.json({ ok: sent > 0, sent, failed: mine.length - sent });
   });
 
-  startPushScheduler();
+  // No Vercel não existe processo contínuo: o agendador é substituído por
+  // um gatilho HTTP (/api/cron/push) chamado por Vercel Cron ou cron externo.
+  if (process.env.VERCEL !== '1') startPushScheduler();
+
+  app.get('/api/cron/push', async (req: Request, res: Response) => {
+    const secret = process.env.CRON_SECRET || '';
+    const provided =
+      String(req.header('authorization') || '').replace(/^Bearer\s+/i, '').trim() ||
+      String(req.query.key || '');
+    if (!secret || provided !== secret) {
+      res.status(401).json({ error: 'Não autorizado.' });
+      return;
+    }
+    await primeRequestCaches();
+    await runPushReminderTick();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, at: new Date().toISOString() });
+  });
 
   // Snapshot público: somente catálogo, identidade e configuração do portal.
   app.get('/api/public/snapshot', (_req: Request, res: Response) => {
@@ -1705,7 +1918,7 @@ async function startServer(): Promise<void> {
     max: 15,
     message: 'Muitas solicitações de agendamento. Aguarde alguns minutos.',
   });
-  app.post('/api/public/bookings', bookingLimiter, (req: Request, res: Response) => {
+  app.post('/api/public/bookings', bookingLimiter, async (req: Request, res: Response) => {
     type JsonRecord = Record<string, unknown>;
     const body = (req.body || {}) as {
       appointment?: JsonRecord;
@@ -1849,7 +2062,7 @@ async function startServer(): Promise<void> {
     if (storedClient) changes['pk_detail_clients_v1'] = JSON.stringify(clients);
     if (storedMotorcycle) changes['pk_detail_motorcycles_v1'] = JSON.stringify(motorcycles);
 
-    const revision = applyRealtimeChanges(changes, 'public-booking');
+    const revision = await applyRealtimeChanges(changes, 'public-booking');
     res.json({
       ok: true,
       revision,
@@ -1891,8 +2104,8 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.get('/api/brand-identity', (_req: Request, res: Response) => {
-    const registry = readRegistry();
+  app.get('/api/brand-identity', async (_req: Request, res: Response) => {
+    const registry = await readRegistry();
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.json({
       activeLogo: registry.activeLogo,
@@ -1903,16 +2116,10 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.get('/api/brand-identity/assets/:filename', (req: Request, res: Response) => {
+  app.get('/api/brand-identity/assets/:filename', async (req: Request, res: Response) => {
     const filename = String(req.params.filename || '');
     if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
       res.status(400).json({ error: 'Nome de arquivo inválido.' });
-      return;
-    }
-
-    const absPath = path.join(ASSETS_DIR, filename);
-    if (!absPath.startsWith(ASSETS_DIR + path.sep) || !fs.existsSync(absPath)) {
-      res.status(404).json({ error: 'Logotipo não encontrado no armazenamento.' });
       return;
     }
 
@@ -1926,10 +2133,26 @@ async function startServer(): Promise<void> {
         "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox"
       );
     }
+
+    if (isRedisEnabled()) {
+      const asset = await getBrandAssetRemote(filename);
+      if (!asset) {
+        res.status(404).json({ error: 'Logotipo não encontrado no armazenamento.' });
+        return;
+      }
+      res.send(asset.buffer);
+      return;
+    }
+
+    const absPath = path.join(ASSETS_DIR, filename);
+    if (!absPath.startsWith(ASSETS_DIR + path.sep) || !fs.existsSync(absPath)) {
+      res.status(404).json({ error: 'Logotipo não encontrado no armazenamento.' });
+      return;
+    }
     res.sendFile(absPath);
   });
 
-  app.post('/api/brand-identity', requireAuth, requireRole(['admin']), (req: Request, res: Response) => {
+  app.post('/api/brand-identity', requireAuth, requireRole(['admin']), async (req: Request, res: Response) => {
     const session = (req as Request & { pkSession?: AuthSession }).pkSession!;
     const actor = { userId: session.userId, userName: session.userName, userRole: session.userRole };
 
@@ -1988,7 +2211,7 @@ async function startServer(): Promise<void> {
       return;
     }
 
-    const current = readRegistry();
+    const current = await readRegistry();
     const hadPreviousLogo = Boolean(current.activeLogo);
     const nextVersion = current.version + 1;
     const logoId = `logo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1998,15 +2221,19 @@ async function startServer(): Promise<void> {
     const assetUrl = `/api/brand-identity/assets/${storedAssetName}?v=${nextVersion}`;
     const uploadedAt = new Date().toISOString();
 
-    // Critical safety invariant: persist new file to disk FIRST & verify before updating active config
+    // Critical safety invariant: persist new file FIRST & verify before updating active config
     try {
-      fs.writeFileSync(storedAbsPath, fileBuffer);
-      const stat = fs.statSync(storedAbsPath);
-      if (!stat.isFile() || stat.size === 0) {
-        throw new Error('Asset verification failed after write');
+      if (isRedisEnabled()) {
+        await putBrandAssetRemote(storedAssetName, fileBuffer.toString('base64'), resolved.mimeType);
+      } else {
+        fs.writeFileSync(storedAbsPath, fileBuffer);
+        const stat = fs.statSync(storedAbsPath);
+        if (!stat.isFile() || stat.size === 0) {
+          throw new Error('Asset verification failed after write');
+        }
       }
     } catch {
-      if (fs.existsSync(storedAbsPath)) {
+      if (!isRedisEnabled() && fs.existsSync(storedAbsPath)) {
         try {
           fs.unlinkSync(storedAbsPath);
         } catch {}
@@ -2055,7 +2282,7 @@ async function startServer(): Promise<void> {
     };
 
     try {
-      writeRegistryAtomic(nextRegistry);
+      await writeRegistryAtomic(nextRegistry);
     } catch {
       res.status(500).json({
         error: 'Falha ao atualizar registro global da identidade visual. A logo anterior foi mantida.',
@@ -2073,11 +2300,11 @@ async function startServer(): Promise<void> {
     });
   });
 
-  app.delete('/api/brand-identity', requireAuth, requireRole(['admin']), (req: Request, res: Response) => {
+  app.delete('/api/brand-identity', requireAuth, requireRole(['admin']), async (req: Request, res: Response) => {
     const session = (req as Request & { pkSession?: AuthSession }).pkSession!;
     const actor = { userId: session.userId, userName: session.userName, userRole: session.userRole };
 
-    const current = readRegistry();
+    const current = await readRegistry();
     const nowIso = new Date().toISOString();
     const nextVersion = current.version + 1;
     const prevLogo = current.activeLogo;
@@ -2106,7 +2333,7 @@ async function startServer(): Promise<void> {
       audit: [auditEntry, ...current.audit].slice(0, 100),
     };
 
-    writeRegistryAtomic(nextRegistry);
+    await writeRegistryAtomic(nextRegistry);
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       activeLogo: null,
@@ -2193,6 +2420,7 @@ export class ErrorOverlay extends HTMLElement {}
       });
     }
 
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -2236,9 +2464,24 @@ export class ErrorOverlay extends HTMLElement {}
     });
   }
 
+  if (process.env.VERCEL === '1') return app;
+
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[PK Detail Server] running on http://0.0.0.0:${PORT}`);
   });
+  return app;
 }
 
-void startServer();
+const appPromise = startServer().catch(error => {
+  console.error('[PK Detail Server] falha ao iniciar:', (error as Error)?.message || error);
+  throw error;
+});
+
+/** Handler serverless do Vercel (api/index.ts) e também uso local. */
+export default async function pkDetailHandler(
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<void> {
+  const app = await appPromise;
+  app(req as unknown as Request, res as unknown as Response);
+}

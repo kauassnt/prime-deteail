@@ -14,6 +14,9 @@ const LOCAL_ONLY_KEYS = new Set([
 ]);
 const FLUSH_DELAY_MS = 250;
 const RETRY_DELAY_MS = 4000;
+// Em hospedagem serverless (Vercel) não existe canal SSE contínuo: o estado é
+// buscado por polling. Localmente o SSE continua sendo o caminho principal.
+const POLL_INTERVAL_MS = 5000;
 
 const CLIENT_ID = `pk_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
 
@@ -24,6 +27,7 @@ let suppressDepth = 0;
 let eventSource: EventSource | null = null;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 const pending = new Map<string, string>();
 const lastSynced = new Map<string, string>();
@@ -136,11 +140,45 @@ function publishMissingLocalKeys(knownKeys: Set<string>): void {
   if (pending.size > 0) scheduleFlush();
 }
 
+async function pollState(): Promise<void> {
+  if (mode !== 'internal' || !ready) return;
+  try {
+    const response = await fetch('/api/state', {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    });
+    if (!response.ok) return;
+    const snapshot = (await response.json()) as { keys?: Record<string, string> };
+    const changed: Record<string, string> = {};
+    for (const [key, value] of Object.entries(snapshot.keys || {})) {
+      if (!isSyncableKey(key) || typeof value !== 'string') continue;
+      if (pending.has(key)) continue; // alteração local ainda não publicada
+      if (lastSynced.get(key) === value) continue;
+      changed[key] = value;
+    }
+    if (Object.keys(changed).length > 0) applyRemoteChanges(changed);
+  } catch {
+    // rede instável: tenta no próximo ciclo
+  }
+}
+
+function startPolling(): void {
+  if (pollTimer || mode !== 'internal') return;
+  pollTimer = setInterval(() => {
+    void pollState();
+  }, POLL_INTERVAL_MS);
+}
+
 function connectEvents(): void {
   if (mode !== 'internal' || typeof EventSource === 'undefined') return;
   if (eventSource) eventSource.close();
 
   eventSource = new EventSource(`/api/events?clientId=${encodeURIComponent(CLIENT_ID)}`);
+  // Sem SSE (serverless): encerra e segue apenas com polling.
+  eventSource.onerror = () => {
+    if (eventSource) eventSource.close();
+    eventSource = null;
+  };
   eventSource.onmessage = event => {
     try {
       const message = JSON.parse(event.data) as {
@@ -173,8 +211,10 @@ export function disconnectRealtime(): void {
   }
   if (flushTimer) clearTimeout(flushTimer);
   if (retryTimer) clearTimeout(retryTimer);
+  if (pollTimer) clearInterval(pollTimer);
   flushTimer = null;
   retryTimer = null;
+  pollTimer = null;
 }
 
 /**
@@ -206,6 +246,7 @@ export async function initInternalRealtime(seed: () => void): Promise<void> {
         // salvos antes da sincronização) são enviadas uma vez.
         publishMissingLocalKeys(new Set(Object.keys(keys)));
         connectEvents();
+        startPolling();
         return;
       }
     }
@@ -221,6 +262,7 @@ export async function initInternalRealtime(seed: () => void): Promise<void> {
   }
   publishMissingLocalKeys(new Set());
   connectEvents();
+  startPolling();
 }
 
 /**
