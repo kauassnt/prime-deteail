@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 617" fill="none">
+  <defs>
+    <linearGradient id="pk-primary" x1="0" y1="0" x2="470" y2="617" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF5A00" stop-opacity="0.72" />
+      <stop offset="55%" stop-color="#CC4700" stop-opacity="0.34" />
+      <stop offset="100%" stop-color="#080808" stop-opacity="1" />
+    </linearGradient>
+    <radialGradient id="pk-depth" cx="25%" cy="75%" r="80%">
+      <stop offset="0%" stop-color="#080808" stop-opacity="0.96" />
+      <stop offset="65%" stop-color="#080808" stop-opacity="0.72" />
+      <stop offset="100%" stop-color="#080808" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="470" height="617" rx="16" fill="#080808" />
+  <rect width="470" height="617" rx="16" fill="url(#pk-primary)" />
+  <rect width="470" height="617" rx="16" fill="url(#pk-depth)" />
+</svg>

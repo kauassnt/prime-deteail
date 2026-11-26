@@ -1,0 +1,212 @@
+/* ==========================================================================
+   Lumina Auth — Discreet Apple × Claude Motion
+   Restrained transitions on transform and opacity only.
+   ========================================================================== */
+
+@keyframes cardEntrance {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes viewFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes bannerSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes modalReveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shakeSubtle {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+  75% {
+    transform: translateX(-1.5px);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.auth-card {
+  animation: cardEntrance 380ms var(--ease-calm) both;
+}
+
+.auth-view.is-entering {
+  animation: viewFadeIn 200ms var(--ease-calm) both;
+}
+
+.feedback-banner:not([hidden]) {
+  animation: bannerSlideIn 180ms var(--ease-calm) both;
+}
+
+.modal-backdrop:not([hidden]) .modal-surface {
+  animation: modalReveal 180ms var(--ease-calm) both;
+}
+
+.auth-form.is-invalid-shake {
+  animation: shakeSubtle 240ms ease;
+}
+
+.btn-primary.is-loading .btn-spinner {
+  animation: spin 720ms linear infinite;
+}
+
+/* Respect user motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .auth-card,
+  .auth-view.is-entering,
+  .feedback-banner:not([hidden]),
+  .modal-backdrop:not([hidden]) .modal-surface,
+  .auth-form.is-invalid-shake {
+    animation: none !important;
+  }
+
+  .btn-primary,
+  .field-input,
+  .checkbox-box,
+  .checkbox-box svg,
+  .strength-bar,
+  .password-toggle,
+  .text-link,
+  .back-link {
+    transition: none !important;
+  }
+
+  .btn-primary.is-loading .btn-spinner {
+    animation-duration: 1.5s;
+  }
+}
+
+/* Success handoff — Apple-style restrained entrances */
+@keyframes successHaloIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes successRingDraw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes successAvatarPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes successBadgePop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes successCheckDraw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes successTextRise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes successProgressFill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-success-halo,
+  .auth-success-initial,
+  .auth-success-check,
+  .auth-success-check svg,
+  .auth-success-eyebrow,
+  .auth-success-title,
+  .auth-success-subtitle,
+  .auth-success-progress,
+  .auth-success-progress span,
+  .auth-success-ring-progress {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+    stroke-dashoffset: 0;
+  }
+
+  .lumina-login-root.is-logging-in .auth-viewport {
+    transition: none !important;
+  }
+}

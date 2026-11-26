@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content, viewport-fit=cover" />
+    <title>PK Detail — Gestão de Estética e Lavagem de Motos</title>
+    <meta name="description" content="Plataforma SaaS completa de gestão para estética automotiva e lavagem de motocicletas: pátio em tempo real, OS, agenda com prevenção de conflitos, CRM, caixa PDV e WhatsApp." />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="color-scheme" content="light" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta property="og:title" content="PK Detail — Gestão de Estética e Lavagem de Motos" />
+    <meta property="og:description" content="Plataforma SaaS completa de gestão para estética automotiva e lavagem de motocicletas." />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#FFFBF7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#3F1A08" media="(prefers-color-scheme: dark)" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="PK Detail" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #fffbf7;
+      }
+
+      /* Placeholder de primeira pintura: puro HTML/CSS, sem JS. Fica visível
+         apenas enquanto o React ainda não renderizou nada dentro de #root. */
+      #boot-placeholder {
+        display: none;
+      }
+      body:not(:has(#root > *)) #boot-placeholder {
+        display: flex;
+        position: fixed;
+        inset: 0;
+        z-index: 60;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: #fffbf7;
+        pointer-events: none;
+      }
+      .boot-logo {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 56px;
+        height: 56px;
+        border-radius: 16px;
+        border: 1px solid #f1e7dd;
+        background: #fff;
+        box-shadow: 0 6px 18px rgba(63, 26, 8, 0.06);
+        color: #ea580c;
+        font: 800 20px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+        letter-spacing: 0.5px;
+      }
+      .boot-track {
+        width: 96px;
+        height: 3px;
+        border-radius: 999px;
+        background: #f3e7db;
+        overflow: hidden;
+      }
+      .boot-track span {
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: inherit;
+        background: #ea580c;
+        animation: boot-slide 1.15s ease-in-out infinite;
+      }
+      @keyframes boot-slide {
+        0% {
+          transform: translateX(-100%);
+        }
+        100% {
+          transform: translateX(250%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-track span {
+          animation: none;
+          width: 100%;
+          opacity: 0.5;
+        }
+      }
+    </style>
+  </head>
+  <body class="bg-[#FFFBF7] text-[#171717] antialiased selection:bg-[#FFEDD5] selection:text-[#9A3412]">
+    <div id="root"></div>
+    <div id="boot-placeholder" aria-hidden="true">
+      <div class="boot-logo">PK</div>
+      <div class="boot-track"><span></span></div>
+    </div>
+    <noscript>
+      <!-- Sem JavaScript o app nunca monta: esconde o placeholder para não cobrir o aviso. -->
+      <style>
+        #boot-placeholder {
+          display: none !important;
+        }
+      </style>
+      <div style="padding: 32px; font-family: system-ui, sans-serif; text-align: center">
+        O PK Detail precisa de JavaScript habilitado para funcionar.
+      </div>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "Mottu Detail — Gestão de Estética e Lavagem de Motos",
+  "description": "Plataforma SaaS completa de gestão para estética automotiva e lavagem de motocicletas: pátio em tempo real, OS, agenda com prevenção de conflitos, CRM com múltiplos veículos, catálogo de insumos, caixa PDV com conferência cega, financeiro DRE, fidelidade Mottu Club, comissões, portal do cliente e disparos WhatsApp.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

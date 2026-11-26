@@ -1,0 +1,257 @@
+/* ==========================================================================
+   PK Detail — Mobile-First Native Style & Responsive Breakpoints
+   ========================================================================== */
+
+/* Tablets & Compact Laptops */
+@media (max-width: 1024px) {
+  .auth-viewport {
+    padding: 20px;
+  }
+
+  .auth-card {
+    max-width: 880px;
+    min-height: 615px;
+    grid-template-columns: 45% 55%;
+  }
+
+  .brand-content {
+    padding: 28px 28px 32px;
+  }
+
+  .brand-headline {
+    font-size: 1.25rem;
+  }
+
+  .form-panel {
+    padding: 24px 26px;
+  }
+}
+
+/* Mobile & Small Tablets — Native Clean White Centered App Screen */
+@media (max-width: 768px) {
+  .lumina-login-root {
+    background-color: var(--pk-white);
+    background-image: none;
+  }
+
+  .auth-viewport {
+    align-items: center;
+    justify-content: center;
+    padding:
+      max(24px, env(safe-area-inset-top))
+      max(22px, env(safe-area-inset-right))
+      max(28px, env(safe-area-inset-bottom))
+      max(22px, env(safe-area-inset-left));
+  }
+
+  .auth-card {
+    grid-template-columns: 1fr;
+    min-height: auto;
+    max-width: 390px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    background-color: transparent;
+  }
+
+  /* Hide desktop split brand panel on mobile for focused native layout */
+  .brand-panel {
+    display: none;
+  }
+
+  .form-panel {
+    padding: 0;
+    background-color: transparent;
+  }
+
+  .form-shell {
+    max-width: 100%;
+  }
+
+  /* Centered rounded-square PK Detail app icon */
+  .form-brand-icon {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    margin-bottom: 22px;
+  }
+
+  .brand-accent-bar,
+  .brand-mini-label {
+    display: none;
+  }
+
+  .mobile-app-badge {
+    display: inline-flex;
+    width: 56px;
+    height: 56px;
+    border-radius: 15px;
+    box-shadow: 0 10px 24px -10px rgba(8, 8, 8, 0.24);
+  }
+
+  .mobile-app-badge svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Centered title and subtitle */
+  .view-header {
+    text-align: center;
+    margin-bottom: 24px;
+  }
+
+  .view-title {
+    font-size: 1.5625rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+  }
+
+  .view-subtitle {
+    font-size: 0.875rem;
+    max-width: 32ch;
+    margin-inline: auto;
+  }
+
+  /* Accessible visually-hidden labels replaced visually by leading input icons */
+  .field-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .auth-form {
+    gap: 14px;
+  }
+
+  .input-leading-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 18px;
+    height: 18px;
+    color: var(--text-placeholder);
+    pointer-events: none;
+    transition: color var(--duration-fast) ease;
+  }
+
+  .input-leading-icon svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .input-wrapper--has-icon:focus-within .input-leading-icon {
+    color: var(--pk-orange);
+  }
+
+  .input-wrapper[data-email-state='valid'] .input-leading-icon {
+    color: var(--success-text);
+  }
+
+  .input-wrapper[data-email-state='invalid'] .input-leading-icon {
+    color: var(--error-text);
+  }
+
+  .field-input,
+  .auth-form--compact .field-input {
+    height: 48px;
+    font-size: 0.9375rem;
+    padding: 0 14px;
+  }
+
+  .field-input--with-icon {
+    padding-left: 42px;
+  }
+
+  .field-input--has-status {
+    padding-right: 42px;
+  }
+
+  .field-input--password,
+  .auth-form--compact .field-input--password {
+    padding-right: 46px;
+  }
+
+  .password-toggle,
+  .auth-form--compact .password-toggle {
+    width: 38px;
+    height: 38px;
+  }
+
+  .form-meta-row {
+    margin-top: -2px;
+  }
+
+  .checkbox-control {
+    min-height: 34px;
+    font-size: 0.8125rem;
+  }
+
+  .form-meta-row .text-link {
+    min-height: 34px;
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.8125rem;
+    color: var(--pk-orange);
+  }
+
+  .form-meta-row .text-link:hover {
+    color: var(--pk-orange-dark);
+  }
+
+  .btn-primary,
+  .auth-form--compact .btn-primary {
+    height: 48px;
+    font-size: 0.9375rem;
+    margin-top: 4px;
+  }
+
+  .btn-outline-secondary {
+    height: 46px;
+    font-size: 0.90625rem;
+    margin-top: 12px;
+  }
+
+  .view-switch {
+    margin-top: 24px;
+    font-size: 0.84375rem;
+  }
+}
+
+/* Small Smartphones */
+@media (max-width: 380px) {
+  .auth-viewport {
+    padding:
+      max(18px, env(safe-area-inset-top))
+      max(16px, env(safe-area-inset-right))
+      max(20px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+
+  .view-title {
+    font-size: 1.4375rem;
+  }
+
+  .form-meta-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+}
+
+/* Ultrawide Monitors */
+@media (min-width: 1600px) {
+  .auth-card {
+    max-width: 1020px;
+    min-height: 655px;
+  }
+}

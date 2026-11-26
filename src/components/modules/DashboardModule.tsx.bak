@@ -1,0 +1,924 @@
+import React, { useState, useMemo } from 'react';
+import { useApp } from '../../context/AppContext';
+import {
+  TrendingUp,
+  DollarSign,
+  Calendar,
+  CheckCircle2,
+  Clock,
+  AlertTriangle,
+  Bike,
+  Sparkles,
+  CreditCard,
+  ArrowRight,
+  Settings,
+  Trophy,
+  BarChart3,
+  PieChart as PieChartIcon,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  Eye,
+  EyeOff,
+  HelpCircle,
+  Target,
+  FileText,
+  FileCheck,
+  Wrench,
+  Car,
+  ChevronRight
+} from 'lucide-react';
+import {
+  useCurrentDate,
+  getOffsetLocalDateStr,
+  getLocalDateKey,
+  formatDateShortBR,
+  isDateStrInPeriod
+} from '../../utils/dateUtils';
+import { PaymentMethod } from '../../types';
+import { BrandLogo } from '../common/BrandLogo';
+
+const METHOD_META: Record<PaymentMethod, { label: string; color: string }> = {
+  pix: { label: 'PIX', color: '#EA580C' },
+  dinheiro: { label: 'Dinheiro', color: '#16A34A' },
+  credito: { label: 'Cartão Crédito', color: '#2563EB' },
+  debito: { label: 'Cartão Débito', color: '#0284C7' },
+  transferencia: { label: 'Transferência', color: '#7C3AED' },
+};
+
+export const DashboardModule: React.FC = () => {
+  const { orders, expenses, appointments, setActiveModule, settings, openQuickAction } = useApp();
+  const { now, todayStr, yesterdayStr, formattedToday } = useCurrentDate();
+
+  const [period, setPeriod] = useState<'hoje' | 'ontem' | '7dias' | '30dias' | 'mes_atual' | 'mes_anterior' | 'tudo'>('mes_atual');
+  const [chartDays, setChartDays] = useState<7 | 14 | 30>(7);
+  const [chartMode, setChartMode] = useState<'faturamento_despesas' | 'recebido'>('faturamento_despesas');
+
+  const [heroPeriod, setHeroPeriod] = useState<'hoje' | 'ontem' | '7dias'>('hoje');
+  const [showRevenueValue, setShowRevenueValue] = useState(true);
+
+  // Monthly goal state (top-level hooks)
+  const [monthlyGoal, setMonthlyGoal] = useState<number>(() => {
+    const saved = localStorage.getItem('pk_detail_monthly_goal_v1');
+    return saved ? Number(saved) : 35000;
+  });
+  const [isEditingGoal, setIsEditingGoal] = useState(false);
+  const [tempGoalInput, setTempGoalInput] = useState(String(monthlyGoal));
+
+  const validOrders = useMemo(() => orders.filter(o => o.status !== 'cancelado'), [orders]);
+
+  // Filtered orders & expenses using local timezone-safe period helper
+  const periodOrders = useMemo(
+    () => validOrders.filter(o => isDateStrInPeriod(o.entryDateTime, period, now)),
+    [validOrders, period, now]
+  );
+
+  const periodExpenses = useMemo(
+    () => expenses.filter(e => isDateStrInPeriod(e.paymentDate || e.dueDate, period, now)),
+    [expenses, period, now]
+  );
+
+  // Actual cash receipts in selected period (by payment transaction date)
+  const periodTransactions = useMemo(() => {
+    const txs: { amount: number; method: PaymentMethod; date: string }[] = [];
+    validOrders.forEach(o => {
+      if (o.paymentTransactions && o.paymentTransactions.length > 0) {
+        o.paymentTransactions.forEach(tx => {
+          if (isDateStrInPeriod(tx.date, period, now)) {
+            txs.push({ amount: tx.amount, method: tx.method, date: tx.date });
+          }
+        });
+      } else if (o.amountPaid > 0 && isDateStrInPeriod(o.entryDateTime, period, now)) {
+        txs.push({ amount: o.amountPaid, method: 'pix', date: o.entryDateTime });
+      }
+    });
+    return txs;
+  }, [validOrders, period, now]);
+
+  // Financial Metrics for selected period
+  const faturamentoPeriodo = periodOrders.reduce((acc, o) => acc + o.total, 0);
+  const recebidoDasOrdensPeriodo = periodOrders.reduce((acc, o) => acc + o.amountPaid, 0);
+  const totalRecebidoPeriodo = periodTransactions.reduce((acc, tx) => acc + tx.amount, 0);
+  const pendenteReceberPeriodo = periodOrders.reduce((acc, o) => acc + o.pendingBalance, 0);
+  const pctRecebido = faturamentoPeriodo > 0 ? Math.round((recebidoDasOrdensPeriodo / faturamentoPeriodo) * 100) : 0;
+
+  const despesasPagas = periodExpenses.filter(e => e.status === 'pago').reduce((acc, e) => acc + e.amount, 0);
+  const despesasPendentes = periodExpenses.filter(e => e.status === 'pendente').reduce((acc, e) => acc + e.amount, 0);
+  const totalDespesas = despesasPagas + despesasPendentes;
+
+  const lucroLiquidoReal = totalRecebidoPeriodo - despesasPagas;
+  const ticketMedio = periodOrders.length > 0 ? faturamentoPeriodo / periodOrders.length : 0;
+  const margemLucro = totalRecebidoPeriodo > 0 ? (lucroLiquidoReal / totalRecebidoPeriodo) * 100 : 0;
+
+  // Specific Day Metrics (auto-updates at midnight)
+  const faturamentoHoje = useMemo(
+    () =>
+      validOrders
+        .filter(o => getLocalDateKey(o.entryDateTime) === todayStr)
+        .reduce((acc, o) => acc + o.total, 0),
+    [validOrders, todayStr]
+  );
+
+  const faturamentoOntem = useMemo(
+    () =>
+      validOrders
+        .filter(o => getLocalDateKey(o.entryDateTime) === yesterdayStr)
+        .reduce((acc, o) => acc + o.total, 0),
+    [validOrders, yesterdayStr]
+  );
+
+  const heroRevenue = useMemo(() => {
+    if (heroPeriod === 'hoje') return faturamentoHoje;
+    if (heroPeriod === 'ontem') return faturamentoOntem;
+    return validOrders
+      .filter(o => isDateStrInPeriod(o.entryDateTime, '7dias', now))
+      .reduce((acc, o) => acc + o.total, 0);
+  }, [heroPeriod, faturamentoHoje, faturamentoOntem, validOrders, now]);
+
+  // Current month goal metrics
+  const currentMonthOrders = useMemo(
+    () => validOrders.filter(o => isDateStrInPeriod(o.entryDateTime, 'mes_atual', now)),
+    [validOrders, now]
+  );
+  const realizedMonthRev = currentMonthOrders.reduce((acc, o) => acc + o.total, 0);
+  const goalPercentage = monthlyGoal > 0 ? Math.min(100, (realizedMonthRev / monthlyGoal) * 100) : 0;
+  const remainingGoal = Math.max(0, monthlyGoal - realizedMonthRev);
+
+  const handleSaveGoal = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = Number(tempGoalInput);
+    if (!isNaN(parsed) && parsed > 0) {
+      setMonthlyGoal(parsed);
+      localStorage.setItem('pk_detail_monthly_goal_v1', String(parsed));
+    }
+    setIsEditingGoal(false);
+  };
+
+  // Operational metrics
+  const motosAguardando = orders.filter(o => o.status === 'para_fazer').length;
+  const motosEmAtendimento = orders.filter(o => o.status === 'em_servico').length;
+  const motosConcluidas = orders.filter(o => o.status === 'concluido').length;
+  const motosEntregues = orders.filter(o => o.status === 'entregue').length;
+  const motosPagas = orders.filter(o => o.paymentStatus === 'pago').length;
+  const ordensCanceladas = orders.filter(o => o.status === 'cancelado').length;
+  const agendamentosHoje = appointments.filter(a => a.date === todayStr && a.status !== 'cancelado').length;
+
+  // Dynamic Daily Chart Data (ending on live todayStr)
+  const dailyChartData = useMemo(() => {
+    const days: {
+      dateKey: string;
+      label: string;
+      isToday: boolean;
+      faturado: number;
+      recebido: number;
+      despesas: number;
+      ordersCount: number;
+    }[] = [];
+
+    for (let i = chartDays - 1; i >= 0; i--) {
+      const dateKey = getOffsetLocalDateStr(-i, now);
+      const isToday = dateKey === todayStr;
+
+      const dayOrders = validOrders.filter(o => getLocalDateKey(o.entryDateTime) === dateKey);
+      const faturado = dayOrders.reduce((acc, o) => acc + o.total, 0);
+
+      // Sum payments actually received on this day across all valid orders
+      let recebido = 0;
+      validOrders.forEach(o => {
+        if (o.paymentTransactions && o.paymentTransactions.length > 0) {
+          o.paymentTransactions.forEach(tx => {
+            if (getLocalDateKey(tx.date) === dateKey) {
+              recebido += tx.amount;
+            }
+          });
+        } else if (o.amountPaid > 0 && getLocalDateKey(o.entryDateTime) === dateKey) {
+          recebido += o.amountPaid;
+        }
+      });
+
+      const despesas = expenses
+        .filter(e => e.status === 'pago' && getLocalDateKey(e.paymentDate || e.dueDate) === dateKey)
+        .reduce((acc, e) => acc + e.amount, 0);
+
+      days.push({
+        dateKey,
+        label: isToday ? `Hoje (${formatDateShortBR(dateKey)})` : formatDateShortBR(dateKey),
+        isToday,
+        faturado,
+        recebido,
+        despesas,
+        ordersCount: dayOrders.length,
+      });
+    }
+    return days;
+  }, [chartDays, now, todayStr, validOrders, expenses]);
+
+  const chartMaxVal = useMemo(() => {
+    const peak = dailyChartData.reduce((mx, d) => {
+      const candidate =
+        chartMode === 'recebido' ? d.recebido : Math.max(d.faturado, d.despesas);
+      return Math.max(mx, candidate);
+    }, 0);
+    return peak > 0 ? peak * 1.15 : 100;
+  }, [dailyChartData, chartMode]);
+
+  const chartTotals = useMemo(
+    () =>
+      dailyChartData.reduce(
+        (acc, d) => ({
+          faturado: acc.faturado + d.faturado,
+          recebido: acc.recebido + d.recebido,
+          despesas: acc.despesas + d.despesas,
+        }),
+        { faturado: 0, recebido: 0, despesas: 0 }
+      ),
+    [dailyChartData]
+  );
+
+  // Payment method distribution for selected period (based on transaction dates)
+  const paymentMethodStats = useMemo(() => {
+    const map: Record<PaymentMethod, number> = {
+      pix: 0,
+      dinheiro: 0,
+      credito: 0,
+      debito: 0,
+      transferencia: 0,
+    };
+
+    periodTransactions.forEach(tx => {
+      map[tx.method] = (map[tx.method] || 0) + tx.amount;
+    });
+
+    const total = Object.values(map).reduce((s, v) => s + v, 0);
+    const items = (Object.keys(map) as PaymentMethod[])
+      .map(method => ({
+        method,
+        label: METHOD_META[method].label,
+        color: METHOD_META[method].color,
+        value: map[method],
+        pct: total > 0 ? (map[method] / total) * 100 : 0,
+      }))
+      .filter(i => i.value > 0)
+      .sort((a, b) => b.value - a.value);
+
+    return { total, items };
+  }, [periodTransactions]);
+
+  // Service popularity breakdown
+  const topServices = useMemo(() => {
+    const serviceCountMap: Record<string, { count: number; totalRev: number }> = {};
+    periodOrders.forEach(o => {
+      o.services.forEach(s => {
+        if (!serviceCountMap[s.serviceName]) {
+          serviceCountMap[s.serviceName] = { count: 0, totalRev: 0 };
+        }
+        serviceCountMap[s.serviceName].count += 1;
+        serviceCountMap[s.serviceName].totalRev += s.price;
+      });
+    });
+    return Object.entries(serviceCountMap)
+      .sort((a, b) => b[1].totalRev - a[1].totalRev)
+      .slice(0, 5);
+  }, [periodOrders]);
+
+  const topServiceMaxRev = topServices[0]?.[1].totalRev || 1;
+
+  // SVG Donut helper for payment methods
+  const donutSegments = useMemo(() => {
+    const radius = 44;
+    const circumference = 2 * Math.PI * radius;
+    let offset = 0;
+    return paymentMethodStats.items.map(item => {
+      const dash = (item.pct / 100) * circumference;
+      const seg = {
+        ...item,
+        dasharray: `${dash} ${circumference - dash}`,
+        dashoffset: -offset,
+      };
+      offset += dash;
+      return seg;
+    });
+  }, [paymentMethodStats]);
+
+  return (
+    <div className="pk-section-stack min-w-0">
+      {/* Hero Card (Faturamento de Hoje - Premium Orange Design) */}
+      <div className="bg-gradient-to-br from-[#EA580C] via-[#F97316] to-[#9A3412] rounded-3xl p-3.5 sm:p-5 text-white shadow-xl shadow-orange-950/15 relative overflow-hidden min-w-0">
+        {/* Background Decorative Rings */}
+        <div className="absolute -right-16 -top-16 w-64 h-64 rounded-full border border-white/15 pointer-events-none" />
+        <div className="absolute -right-8 -top-8 w-48 h-48 rounded-full border border-white/20 pointer-events-none" />
+        <div className="absolute right-12 top-12 w-24 h-24 rounded-full border border-white/25 pointer-events-none" />
+
+        <div className="relative z-10 space-y-3 sm:space-y-3.5">
+          {/* Top Row: Dollar Title + Eye / Help Icons */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-full bg-white/20 text-white flex items-center justify-center font-black text-xs shadow-2xs">
+                $
+              </div>
+              <span className="font-extrabold text-xs sm:text-sm text-white tracking-tight">
+                {heroPeriod === 'hoje' ? 'Faturamento de Hoje' : heroPeriod === 'ontem' ? 'Faturamento de Ontem' : 'Faturamento (7 Dias)'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowRevenueValue(!showRevenueValue)}
+                aria-label="Alternar visibilidade do valor"
+                className="w-7 h-7 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center transition"
+              >
+                {showRevenueValue ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => alert('Métricas calculadas em tempo real com base nas Ordens de Serviço.')}
+                aria-label="Ajuda"
+                className="w-7 h-7 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center transition"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Main Revenue Amount */}
+          <div>
+            <h2 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white tracking-tight font-mono tabular-nums leading-none">
+              {showRevenueValue ? `R$ ${heroRevenue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : 'R$ ••••••'}
+            </h2>
+            <p className="text-[11px] text-orange-100 font-semibold mt-1">
+              Valor atualizado agora há pouco
+            </p>
+          </div>
+
+          {/* Period Selector Pills inside Hero Card */}
+          <div className="flex items-center gap-1.5 pt-0.5">
+            {(['hoje', 'ontem', '7dias'] as const).map(p => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setHeroPeriod(p)}
+                className={`flex-1 min-h-[34px] py-1.5 px-2.5 rounded-xl text-xs font-extrabold transition shadow-2xs ${
+                  heroPeriod === p
+                    ? 'bg-white text-[#9A3412] shadow-sm font-black'
+                    : 'bg-black/20 text-white hover:bg-black/30 font-bold'
+                }`}
+              >
+                {p === 'hoje' ? 'Hoje' : p === 'ontem' ? 'Ontem' : 'Últimos 7 dias'}
+              </button>
+            ))}
+          </div>
+
+          {/* META DE HOJE Box */}
+          <div className="pt-2 border-t border-white/20 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-black text-white">
+              <div className="flex items-center gap-1.5 uppercase tracking-wide text-[11px]">
+                <Target className="w-3.5 h-3.5 text-white shrink-0" />
+                <span>Meta de Hoje</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setTempGoalInput(String(monthlyGoal));
+                  setIsEditingGoal(true);
+                }}
+                className="font-bold text-orange-100 hover:text-white hover:underline inline-flex items-center gap-0.5 text-xs"
+              >
+                <span>Ver metas</span>
+                <span className="text-[10px]">›</span>
+              </button>
+            </div>
+
+            <div className="text-xs sm:text-sm font-black font-mono text-white tabular-nums">
+              R$ {faturamentoHoje.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} de R$ {(monthlyGoal / 30).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+
+            {/* Progress Bar */}
+            <div className="w-full h-2 bg-black/20 rounded-full overflow-hidden p-0.5">
+              <div
+                style={{ transform: `scaleX(${Math.max(0, Math.min(1, faturamentoHoje / Math.max(1, monthlyGoal / 30)))})` }}
+                className="w-full h-full rounded-full bg-white origin-left transition-transform duration-300"
+              />
+            </div>
+
+            <div className="text-[10px] sm:text-[11px] font-bold text-orange-100 tabular-nums">
+              {((faturamentoHoje / Math.max(1, monthlyGoal / 30)) * 100).toFixed(1)}% atingido · faltam R$ {Math.max(0, (monthlyGoal / 30) - faturamentoHoje).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 3 Quick Action Cards with Orange Border */}
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        <button
+          type="button"
+          onClick={() => openQuickAction('os')}
+          className="bg-white rounded-2xl p-2.5 sm:p-3.5 border-2 border-orange-200/90 shadow-xs hover:border-[#EA580C] hover:shadow-md transition flex flex-col items-center text-center group"
+        >
+          <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-orange-50 text-[#EA580C] flex items-center justify-center mb-1.5 group-hover:scale-105 transition-transform">
+            <FileText className="w-4 h-4 sm:w-5 sm:h-5" />
+          </div>
+          <span className="text-[11px] sm:text-xs font-black text-slate-900">+ Nova OS</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => openQuickAction('agenda')}
+          className="bg-white rounded-2xl p-2.5 sm:p-3.5 border-2 border-orange-200/90 shadow-xs hover:border-[#EA580C] hover:shadow-md transition flex flex-col items-center text-center group"
+        >
+          <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-orange-50 text-[#EA580C] flex items-center justify-center mb-1.5 group-hover:scale-105 transition-transform">
+            <Calendar className="w-4 h-4 sm:w-5 sm:h-5" />
+          </div>
+          <span className="text-[11px] sm:text-xs font-black text-slate-900">+ Novo Agendamento</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => openQuickAction('os')}
+          className="bg-white rounded-2xl p-2.5 sm:p-3.5 border-2 border-orange-200/90 shadow-xs hover:border-[#EA580C] hover:shadow-md transition flex flex-col items-center text-center group"
+        >
+          <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl bg-orange-50 text-[#EA580C] flex items-center justify-center mb-1.5 group-hover:scale-105 transition-transform">
+            <FileCheck className="w-4 h-4 sm:w-5 sm:h-5" />
+          </div>
+          <span className="text-[11px] sm:text-xs font-black text-slate-900">+ Novo Orçamento</span>
+        </button>
+      </div>
+
+      {/* CARROS NO PÁTIO - Reference Layout */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-[#EA580C] shrink-0 inline-block" />
+            <h3 className="text-xs sm:text-sm font-black tracking-wider uppercase text-slate-800">
+              CARROS NO PÁTIO
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveModule('patio')}
+            className="px-2.5 py-0.5 rounded-full border border-slate-200/90 bg-white text-[11px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1 shadow-2xs transition"
+          >
+            <span>Ver todos</span>
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+
+        {/* 4 Cards in 4-column Grid */}
+        <div className="grid grid-cols-4 gap-1.5 sm:gap-2.5">
+          {/* 1. Para fazer */}
+          <div
+            onClick={() => setActiveModule('patio')}
+            className="bg-white rounded-2xl p-2 sm:p-3 border border-slate-100 shadow-xs relative flex flex-col items-center justify-between text-center min-h-[82px] sm:min-h-[96px] cursor-pointer hover:shadow-md transition group"
+          >
+            <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-blue-300" />
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-blue-50 text-blue-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+              <Car className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            </div>
+            <span className="text-[10px] sm:text-[11px] font-semibold text-slate-500 mt-0.5">Para fazer</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900 font-mono leading-none">{motosAguardando}</span>
+          </div>
+
+          {/* 2. Em serviço */}
+          <div
+            onClick={() => setActiveModule('patio')}
+            className="bg-white rounded-2xl p-2 sm:p-3 border border-slate-100 shadow-xs relative flex flex-col items-center justify-between text-center min-h-[82px] sm:min-h-[96px] cursor-pointer hover:shadow-md transition group"
+          >
+            <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-amber-300" />
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-50 text-amber-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+              <Wrench className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            </div>
+            <span className="text-[10px] sm:text-[11px] font-semibold text-slate-500 mt-0.5">Em serviço</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900 font-mono leading-none">{motosEmAtendimento}</span>
+          </div>
+
+          {/* 3. Concluído */}
+          <div
+            onClick={() => setActiveModule('patio')}
+            className="bg-white rounded-2xl p-2 sm:p-3 border border-slate-100 shadow-xs relative flex flex-col items-center justify-between text-center min-h-[82px] sm:min-h-[96px] cursor-pointer hover:shadow-md transition group"
+          >
+            <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-emerald-300" />
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-emerald-50 text-emerald-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+              <CheckCircle2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            </div>
+            <span className="text-[10px] sm:text-[11px] font-semibold text-slate-500 mt-0.5">Concluído</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900 font-mono leading-none">{motosConcluidas}</span>
+          </div>
+
+          {/* 4. Pago */}
+          <div
+            onClick={() => setActiveModule('ordens')}
+            className="bg-white rounded-2xl p-2 sm:p-3 border border-slate-100 shadow-xs relative flex flex-col items-center justify-between text-center min-h-[82px] sm:min-h-[96px] cursor-pointer hover:shadow-md transition group"
+          >
+            <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-purple-300" />
+            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-purple-50 text-purple-500 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+              <DollarSign className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            </div>
+            <span className="text-[10px] sm:text-[11px] font-semibold text-slate-500 mt-0.5">Pago</span>
+            <span className="text-lg sm:text-2xl font-black text-slate-900 font-mono leading-none">{motosPagas}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* AGENDAMENTOS DE HOJE - Reference Layout */}
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-[#EA580C] shrink-0 inline-block" />
+            <h3 className="text-xs sm:text-sm font-black tracking-wider uppercase text-slate-800">
+              AGENDAMENTOS DE HOJE
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveModule('agenda')}
+            className="px-2.5 py-0.5 rounded-full border border-slate-200/90 bg-white text-[11px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1 shadow-2xs transition"
+          >
+            <span>Ver todos</span>
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+
+        {appointments.filter(a => a.date === todayStr && a.status !== 'cancelado').length === 0 ? (
+          <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-xs text-center text-xs text-slate-400">
+            Nenhum agendamento agendado para hoje.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-2.5">
+            {appointments
+              .filter(a => a.date === todayStr && a.status !== 'cancelado')
+              .slice(0, 3)
+              .map(apt => (
+                <div
+                  key={apt.id}
+                  onClick={() => setActiveModule('agenda')}
+                  className="bg-white rounded-2xl p-2.5 sm:p-3 border border-slate-100 shadow-xs hover:border-[#EA580C]/60 transition cursor-pointer flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <p className="font-extrabold text-xs text-slate-900 truncate">{apt.clientName}</p>
+                    <p className="text-[11px] text-slate-500 truncate">{apt.motorcycleModel} · {apt.motorcyclePlate}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="px-2 py-0.5 rounded-lg bg-orange-50 text-[#9A3412] text-[11px] font-black font-mono">
+                      {apt.startTime}
+                    </span>
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+
+      {/* Main Dynamic Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 pk-grid-gap items-stretch">
+        {/* Dynamic Daily Revenue & Expense Chart */}
+        <div className="lg:col-span-2 bg-white pk-card-pad rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between h-full min-w-0">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 mb-2.5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-4 h-4 text-[#EA580C] shrink-0" />
+                <h2 className="text-sm font-extrabold text-slate-900">Desempenho Financeiro Diário</h2>
+              </div>
+              <p className="text-xs text-slate-500">
+                Atualização automática por data até {formattedToday} ({chartDays} dias)
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              <div className="flex bg-slate-100 p-0.5 rounded-xl text-[11px] font-bold">
+                {([7, 14, 30] as const).map(d => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setChartDays(d)}
+                    className={`px-2.5 py-1 rounded-lg transition ${
+                      chartDays === d ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                    }`}
+                  >
+                    {d}d
+                  </button>
+                ))}
+              </div>
+              <div className="flex bg-slate-100 p-0.5 rounded-xl text-[11px] font-bold">
+                <button
+                  type="button"
+                  onClick={() => setChartMode('faturamento_despesas')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    chartMode === 'faturamento_despesas' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                  }`}
+                >
+                  Faturado x Desp.
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChartMode('recebido')}
+                  className={`px-2.5 py-1 rounded-lg transition ${
+                    chartMode === 'recebido' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+                  }`}
+                >
+                  Recebido
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Chart Legend */}
+          <div className="flex flex-wrap items-center gap-4 text-[11px] font-bold mb-1.5">
+            {chartMode === 'faturamento_despesas' ? (
+              <>
+                <span className="inline-flex items-center gap-1.5 text-[#9A3412]">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-[#EA580C]" />
+                  <span>Faturamento (R$ {chartTotals.faturado.toFixed(2)})</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5 text-rose-700">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-rose-500" />
+                  <span>Despesas Pagas (R$ {chartTotals.despesas.toFixed(2)})</span>
+                </span>
+              </>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-emerald-700">
+                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600" />
+                <span>Recebido no Caixa (R$ {chartTotals.recebido.toFixed(2)})</span>
+              </span>
+            )}
+          </div>
+
+          {/* Responsive Bar Chart */}
+          <div
+            className={`h-44 sm:h-52 w-full flex items-end gap-1 sm:gap-2 pt-4 pb-1.5 px-0.5 sm:px-1 min-w-0 ${
+              chartDays <= 7 ? 'overflow-hidden' : 'overflow-x-auto pk-scroll-compact'
+            }`}
+          >
+            {dailyChartData.map((col, idx) => {
+              const primaryVal = chartMode === 'recebido' ? col.recebido : col.faturado;
+              const primaryPct = primaryVal > 0 ? Math.max(8, (primaryVal / chartMaxVal) * 100) : 2;
+              const expPct = col.despesas > 0 ? Math.max(8, (col.despesas / chartMaxVal) * 100) : 0;
+
+              return (
+                <div
+                  key={col.dateKey}
+                  className={`flex-1 flex flex-col items-center h-full justify-end group ${
+                    chartDays <= 7 ? 'min-w-0' : 'min-w-[22px]'
+                  }`}
+                  title={`${formatDateShortBR(col.dateKey)}: Faturado R$ ${col.faturado.toFixed(2)} | Recebido R$ ${col.recebido.toFixed(2)} | Despesas R$ ${col.despesas.toFixed(2)}`}
+                >
+                  <span className="text-[9px] font-mono font-bold text-slate-700 mb-1 sm:opacity-0 sm:group-hover:opacity-100 transition tabular-nums truncate max-w-full">
+                    {primaryVal > 0 ? `R$${primaryVal.toFixed(0)}` : '0'}
+                  </span>
+
+                  <div className="w-full flex items-end justify-center gap-0.5 flex-1 min-h-0">
+                    <div
+                      style={{ height: `${primaryPct}%` }}
+                      className={`flex-1 max-w-[26px] rounded-t-md sm:rounded-t-lg pk-bar-rise transition-[height,background-color,filter] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:brightness-110 ${
+                        chartMode === 'recebido'
+                          ? col.isToday
+                            ? 'bg-emerald-600 shadow-xs'
+                            : 'bg-emerald-400/80 hover:bg-emerald-600'
+                          : col.isToday
+                            ? 'bg-gradient-to-t from-[#9A3412] to-[#F97316] shadow-sm shadow-[#EA580C]/30'
+                            : primaryVal > 0
+                              ? 'bg-[#EA580C]/75 hover:bg-[#EA580C]'
+                              : 'bg-slate-200'
+                      }`}
+                    />
+                    {chartMode === 'faturamento_despesas' && col.despesas > 0 && (
+                      <div
+                        style={{ height: `${expPct}%` }}
+                        className="flex-1 max-w-[16px] rounded-t-md sm:rounded-t-lg bg-rose-500/85 hover:bg-rose-600 pk-bar-rise transition-[height,background-color] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]"
+                      />
+                    )}
+                  </div>
+
+                  {(chartDays <= 7 || idx % (chartDays === 14 ? 2 : 5) === 0 || col.isToday) ? (
+                    <span
+                      className={`text-[9px] sm:text-[10px] font-semibold mt-2 truncate max-w-full ${
+                        col.isToday ? 'text-[#9A3412] font-extrabold' : 'text-slate-500'
+                      }`}
+                    >
+                      {col.isToday ? 'Hoje' : formatDateShortBR(col.dateKey)}
+                    </span>
+                  ) : (
+                    <span className="text-[9px] mt-2 text-transparent select-none">.</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Payment Methods SVG Donut Chart */}
+        <div className="bg-white pk-card-pad rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between h-full min-w-0">
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-900">Receitas por Pagamento</h2>
+                <p className="text-xs text-slate-500">Distribuição do período</p>
+              </div>
+              <PieChartIcon className="w-4 h-4 text-[#EA580C] shrink-0" />
+            </div>
+
+            {paymentMethodStats.items.length === 0 ? (
+              <div className="py-6 sm:py-8 text-center text-xs text-slate-400">
+                Nenhum recebimento registrado neste período.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* SVG Donut Chart */}
+                <div className="flex items-center justify-center py-1">
+                  <div className="relative w-36 h-36">
+                    <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+                      <circle
+                        cx="60"
+                        cy="60"
+                        r="44"
+                        fill="transparent"
+                        stroke="#F1F5F9"
+                        strokeWidth="14"
+                      />
+                      {donutSegments.map(seg => (
+                        <circle
+                          key={seg.method}
+                          cx="60"
+                          cy="60"
+                          r="44"
+                          fill="transparent"
+                          stroke={seg.color}
+                          strokeWidth="14"
+                          strokeDasharray={seg.dasharray}
+                          strokeDashoffset={seg.dashoffset}
+                          className="transition-[stroke-dashoffset,stroke-dasharray] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]"
+                        />
+                      ))}
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+                      <span className="text-[9px] font-bold uppercase text-slate-400">Total</span>
+                      <span className="text-xs font-black font-mono text-slate-900 tabular-nums">
+                        R$ {paymentMethodStats.total.toFixed(0)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Method Breakdown List */}
+                <div className="space-y-2">
+                  {paymentMethodStats.items.map(item => (
+                    <div key={item.method} className="flex items-center justify-between text-xs gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="font-semibold text-slate-700 truncate">{item.label}</span>
+                      </div>
+                      <div className="text-right shrink-0 font-mono tabular-nums">
+                        <span className="font-bold text-slate-900">R$ {item.value.toFixed(2)}</span>
+                        <span className="text-[10px] text-slate-400 ml-1">({item.pct.toFixed(0)}%)</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setActiveModule('financeiro')}
+            className="mt-4 w-full py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition flex items-center justify-center gap-1"
+          >
+            <span>Abrir Financeiro Completo</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Secondary Row: Entradas vs Saídas Comparison & Top Services */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 pk-grid-gap items-stretch">
+        {/* Financial Flow Balance Comparison */}
+        <div className="bg-white pk-card-pad rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between min-w-0 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-extrabold text-slate-900">Resumo Entradas x Saídas do Período</h2>
+              <p className="text-xs text-slate-500">Saúde financeira e liquidez imediata</p>
+            </div>
+            <DollarSign className="w-4 h-4 text-[#EA580C]" />
+          </div>
+
+          <div className="space-y-3 text-xs">
+            {[
+              {
+                label: 'Faturamento Bruto (OS)',
+                value: faturamentoPeriodo,
+                color: 'bg-[#EA580C]',
+                icon: ArrowUpCircle,
+                iconColor: 'text-[#EA580C]',
+              },
+              {
+                label: 'Receita Efetivamente Recebida',
+                value: totalRecebidoPeriodo,
+                color: 'bg-emerald-600',
+                icon: CheckCircle2,
+                iconColor: 'text-emerald-600',
+              },
+              {
+                label: 'Saldo Pendente a Receber',
+                value: pendenteReceberPeriodo,
+                color: 'bg-amber-500',
+                icon: Clock,
+                iconColor: 'text-amber-600',
+              },
+              {
+                label: 'Despesas Pagas',
+                value: despesasPagas,
+                color: 'bg-rose-600',
+                icon: ArrowDownCircle,
+                iconColor: 'text-rose-600',
+              },
+            ].map(row => {
+              const refMax = Math.max(faturamentoPeriodo, totalDespesas, 1);
+              const pct = Math.min(100, (row.value / refMax) * 100);
+              const Icon = row.icon;
+              return (
+                <div key={row.label} className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
+                      <Icon className={`w-3.5 h-3.5 ${row.iconColor} shrink-0`} />
+                      <span>{row.label}</span>
+                    </span>
+                    <span className="font-mono font-bold text-slate-900 tabular-nums">
+                      R$ {row.value.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div
+                      style={{ transform: `scaleX(${Math.max(0, Math.min(1, pct / 100))})` }}
+                      className={`w-full h-full rounded-full ${row.color} origin-left transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]`}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between text-xs">
+            <span className="font-bold text-slate-700">Resultado Líquido (Recebido - Despesas Pagas)</span>
+            <span className={`font-mono font-black text-sm tabular-nums ${lucroLiquidoReal >= 0 ? 'text-[#EA580C]' : 'text-rose-600'}`}>
+              R$ {lucroLiquidoReal.toFixed(2)}
+            </span>
+          </div>
+        </div>
+
+        {/* Top Services Ranking */}
+        <div className="bg-white pk-card-pad rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between h-full min-w-0">
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-900">Serviços Mais Vendidos</h2>
+                <p className="text-xs text-slate-500">Ranking por receita e quantidade no período</p>
+              </div>
+              <Sparkles className="w-4 h-4 text-[#EA580C]" />
+            </div>
+
+            <div className="space-y-2.5">
+              {topServices.length === 0 ? (
+                <p className="text-xs text-slate-400 py-5 sm:py-6 text-center">Nenhum serviço registrado no período</p>
+              ) : (
+                topServices.map(([name, stat], idx) => {
+                  const pct = Math.min(100, (stat.totalRev / topServiceMaxRev) * 100);
+                  return (
+                    <div key={name} className="space-y-1 text-xs">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 truncate pr-2">
+                          <span className="w-5 h-5 rounded-md bg-[#FFEDD5] text-[#9A3412] font-bold flex items-center justify-center text-[10px] shrink-0">
+                            {idx + 1}
+                          </span>
+                          <span className="font-semibold text-slate-800 truncate">{name}</span>
+                        </div>
+                        <div className="text-right shrink-0 font-mono tabular-nums">
+                          <span className="font-bold text-slate-900">{stat.count}x</span>
+                          <span className="text-[11px] text-slate-500 ml-2">R$ {stat.totalRev.toFixed(2)}</span>
+                        </div>
+                      </div>
+                      <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          style={{ width: `${pct}%` }}
+                          className="h-full rounded-full bg-gradient-to-r from-[#EA580C] to-[#F97316]"
+                        />
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setActiveModule('servicos')}
+            className="mt-3.5 w-full py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition flex items-center justify-center gap-1"
+          >
+            <span>Gerenciar Catálogo & Preços</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
