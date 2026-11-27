@@ -13,7 +13,8 @@
     "backup": "tsx scripts/backup.ts",
     "reset-password": "tsx scripts/reset-password.ts",
     "seed:redis": "tsx scripts/seed-redis.ts",
-    "seed:supabase": "tsx scripts/seed-supabase.ts"
+    "seed:supabase": "tsx scripts/seed-supabase.ts",
+    "reset:state": "tsx scripts/reset-state.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.2",
