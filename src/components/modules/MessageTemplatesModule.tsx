@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { MessageSquare, ChevronDown, RotateCcw, Save, Check } from 'lucide-react';
+import { notifyRealtimeKey } from '../../services/realtimeService';
 
 type TemplateId =
   | 'resumo_os'
@@ -193,6 +194,16 @@ export const MessageTemplatesModule: React.FC = () => {
     return () => window.clearTimeout(timer);
   }, [saved]);
 
+  // Alterações feitas em outro dispositivo também atualizam esta tela.
+  useEffect(() => {
+    const onRealtime = (event: Event) => {
+      const keys = (event as CustomEvent<{ keys?: string[] }>).detail?.keys || [];
+      if (keys.includes(STORAGE_KEY)) setTemplates(loadTemplates());
+    };
+    window.addEventListener('pk:realtime-state', onRealtime);
+    return () => window.removeEventListener('pk:realtime-state', onRealtime);
+  }, []);
+
   const toggleGroup = (title: string) => {
     setOpenGroups(prev => (prev.includes(title) ? prev.filter(item => item !== title) : [...prev, title]));
   };
@@ -217,8 +228,11 @@ export const MessageTemplatesModule: React.FC = () => {
   };
 
   const handleSave = () => {
+    const serialized = JSON.stringify(templates);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
+      localStorage.setItem(STORAGE_KEY, serialized);
+      // Publica no servidor para persistir no Supabase e sincronizar entre dispositivos.
+      notifyRealtimeKey(STORAGE_KEY, serialized);
     } catch {
       // segue em memória
     }

@@ -12,6 +12,7 @@ import {
   normalizeMotoText,
 } from '../data/motorcycleCatalogSeed';
 import { swrFetch } from '../core/networkCache';
+import { notifyRealtimeKey } from './realtimeService';
 import {
   ErrorReporter,
   NetworkError,
@@ -270,7 +271,10 @@ export function loadMotoCatalog(): MotoCatalogState {
 
 export function saveMotoCatalog(catalog: MotoCatalogState): void {
   try {
-    localStorage.setItem(MOTO_CATALOG_STORAGE_KEY, JSON.stringify(catalog));
+    const serialized = JSON.stringify(catalog);
+    localStorage.setItem(MOTO_CATALOG_STORAGE_KEY, serialized);
+    // Persiste no Supabase e sincroniza o catálogo entre dispositivos.
+    notifyRealtimeKey(MOTO_CATALOG_STORAGE_KEY, serialized);
   } catch (err) {
     console.error('Erro ao salvar cache do catálogo de motocicletas:', err);
   }
