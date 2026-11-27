@@ -527,7 +527,13 @@ let realtimeCache: RealtimeDisk | null = null;
 let brandRegistryCache: BrandRegistryDisk | null = null;
 
 function ensureStorageDirs(): void {
-  fs.mkdirSync(ASSETS_DIR, { recursive: true });
+  // Com persistência remota (Supabase) os assets não usam disco local.
+  if (isRedisEnabled()) return;
+  try {
+    fs.mkdirSync(ASSETS_DIR, { recursive: true });
+  } catch {
+    // Sistema de arquivos somente leitura (ex.: Vercel): segue com assets remotos.
+  }
 }
 
 async function readRegistry(): Promise<BrandRegistryDisk> {
