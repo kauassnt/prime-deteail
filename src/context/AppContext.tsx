@@ -417,14 +417,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (typeof window === 'undefined') return;
     let disposed = false;
     const params = new URLSearchParams(window.location.search);
-    const portalSlug = window.location.pathname.replace(/^\/+|\/+$/g, '');
-    const publicView =
+    const explicitPortal =
       params.get('portal') === '1' ||
       params.get('portal') === 'true' ||
       params.get('cliente') === '1' ||
       params.get('modo') === 'cliente' ||
-      window.location.hash === '#portal' ||
-      /^[a-z0-9][a-z0-9-]{2,39}$/.test(portalSlug);
+      window.location.hash === '#portal';
+    const portalSlug = window.location.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+    // Rotas internas (/dashboard, /mensagens, ...) NUNCA são o portal público.
+    // Sem esta checagem, recarregar uma página interna iniciava o modo público
+    // e o app parava de publicar as alterações no Supabase.
+    const configuredSlug = normalizeSlug(data.portalConfig?.storefront?.slug || '');
+    const companySlug = normalizeSlug(companyDisplayName(data.settings));
+    const publicView =
+      explicitPortal ||
+      (!isInternalPath(window.location.pathname) &&
+        /^[a-z0-9][a-z0-9-]{2,39}$/.test(portalSlug) &&
+        (portalSlug === configuredSlug || portalSlug === companySlug));
 
     const handleRealtimeSync = (event: Event) => {
       const keys = (event as CustomEvent<{ keys?: string[] }>).detail?.keys || [];
