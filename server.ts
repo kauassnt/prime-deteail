@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { createRequire } from 'node:module';
+import webpushModule from './src/server/webpush.cjs';
 import {
   isRedisEnabled,
   hydrateState,
@@ -29,8 +29,8 @@ import {
   getBrandAssetRemote,
 } from './src/server/store';
 
-// `web-push` é CommonJS: carregado via require para funcionar no Bun e no Node.
-const nodeRequire = createRequire(import.meta.url);
+// `web-push` é CommonJS: o wrapper .cjs permite import default em ESM e faz
+// o esbuild empacotar o pacote no bundle do Vercel.
 type WebPushClient = {
   generateVAPIDKeys: () => { publicKey: string; privateKey: string };
   sendNotification: (
@@ -39,7 +39,7 @@ type WebPushClient = {
     options: Record<string, unknown>
   ) => Promise<unknown>;
 };
-const webpush = nodeRequire('web-push') as WebPushClient;
+const webpush = webpushModule as unknown as WebPushClient;
 
 type BrandFormat = 'PNG' | 'JPG' | 'JPEG' | 'WEBP' | 'SVG';
 
